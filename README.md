@@ -6,10 +6,10 @@ web UI to import parts from a CSV file.
 
 ## Features
 
-- Checks for existing parts before importing (handles prefix matches like C1991 vs C19915)
-- Category matching via fuzzy similarity with automatic category creation
+- Category matching with automatic category creation
 - Browser-based authentication (you might not be redirected after logging in, just continue normally then)
-- Continues on errors (and saves screenshots), skips already imported parts on re-runs
+- Continues on errors (and saves screenshots)
+- Note: Existence check currently disabled - will attempt to import all parts in CSV
 
 ## Quick Start
 

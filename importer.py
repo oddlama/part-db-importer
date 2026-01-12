@@ -158,6 +158,7 @@ class LCSCImporter:
                 return False
 
             # Check each result to verify exact LCSC ID match
+            visited = set()
             for link in part_links:
                 href = link.get_attribute('href')
                 # Extract part ID from URL like /en/part/8/info
@@ -166,22 +167,30 @@ class LCSCImporter:
                     continue
 
                 part_id = match.group(1)
+                if part_id in visited:
+                    continue
                 self.logger.debug(f"Checking part ID {part_id} for exact LCSC match")
+                visited.add(part_id)
 
                 # Navigate to suppliers page
                 suppliers_url = f"{self.base_url}/en/part/{part_id}/info#suppliers"
                 self.page.goto(suppliers_url, wait_until="networkidle", timeout=TIMEOUT_MS)
 
-                # Look for exact LCSC ID in suppliers table
-                # The td contains a link like: <a href="https://www.lcsc.com/product-detail/C2962094.html">C2962094</a>
-                lcsc_links = self.page.locator(f'a[href*="lcsc.com"][href*="{lcsc_id}"]').all()
+                # Get all LCSC links and extract IDs from URLs
+                lcsc_links = self.page.locator('a[href*="lcsc.com"]').all()
+                self.logger.debug(f"Found {len(lcsc_links)} LCSC links to check")
 
                 for lcsc_link in lcsc_links:
-                    link_text = lcsc_link.inner_text().strip()
-                    # Exact match check (handles prefix issue: C1991 vs C19915)
-                    if link_text == lcsc_id:
-                        self.logger.info(f"Part {lcsc_id} already exists (Part ID: {part_id})")
-                        return True
+                    href = lcsc_link.get_attribute('href')
+                    # Extract LCSC ID from URL pattern: lcsc.com/product-detail/C[numbers]
+                    match = re.search(r'lcsc\.com/product-detail/(C\d+)', href)
+                    if match:
+                        link_lcsc_id = match.group(1)
+                        self.logger.debug(f"Comparing extracted ID '{link_lcsc_id}' with '{lcsc_id}'")
+                        # Exact match check (handles prefix issue: C1991 vs C19915)
+                        if link_lcsc_id == lcsc_id:
+                            self.logger.info(f"Part {lcsc_id} already exists (Part ID: {part_id})")
+                            return True
 
             self.logger.debug(f"No exact match found for {lcsc_id} (only prefix matches)")
             return False
@@ -214,10 +223,11 @@ class LCSCImporter:
         self.logger.debug(f"Processing {lcsc_id} with amount {amount}")
 
         try:
-            # Check if part already exists
-            if self.check_part_exists(lcsc_id):
-                self.logger.info(f"Skipping {lcsc_id} - already exists in database")
-                return "skipped"
+            # NOTE: Existence check disabled - Part-DB search is unreliable
+            # Assumes all parts are new. Import will fail if part already exists.
+            # if self.check_part_exists(lcsc_id):
+            #     self.logger.info(f"Skipping {lcsc_id} - already exists in database")
+            #     return "skipped"
 
             # Navigate to create page
             url = f"{self.base_url}/en/part/from_info_provider/lcsc/{lcsc_id}/create"
@@ -319,23 +329,41 @@ class LCSCImporter:
 
                 # Step 10: Look for matches in the filtered results
                 try:
-                    # Check if there's an exact match in the filtered options
+                    # Check if there's a match in the filtered options
                     self.page.wait_for_selector(SELECTOR_OPTION, timeout=2000)
                     options = self.page.locator(SELECTOR_OPTION).all()
 
-                    exact_match = None
+                    self.logger.debug(f"Found {len(options)} filtered options")
+
+                    # Build expected format: dropdown shows "Leaf\n Parent" (with newline)
+                    expected_format = f"{leaf}\n {parent}" if parent else leaf
+                    self.logger.debug(f"Looking for match with format: '{expected_format}'")
+
+                    # Normalize for comparison: keep only alphanumeric chars
+                    def normalize(s):
+                        return ''.join(c.lower() for c in s if c.isalnum())
+
+                    expected_normalized = normalize(expected_format)
+                    self.logger.debug(f"Normalized expected: '{expected_normalized}'")
+
+                    match_found = None
                     for option in options:
                         text = option.inner_text().strip()
-                        # Check for exact match (case-insensitive)
-                        if text.lower() == lcsc_category.lower():
-                            exact_match = option
+                        text_normalized = normalize(text)
+                        self.logger.debug(f"  Checking option: '{text}' (normalized: '{text_normalized}')")
+
+                        # Compare normalized versions (alphanumeric only)
+                        if text_normalized == expected_normalized:
+                            match_found = option
+                            self.logger.debug(f"  -> Match found!")
                             break
 
-                    if exact_match:
-                        self.logger.info(f"Found exact match for category: {lcsc_category}")
-                        exact_match.click()
+                    if match_found:
+                        self.logger.info(f"Selecting existing category: {lcsc_category}")
+                        match_found.click()
                     else:
-                        # No exact match, look for create option
+                        # No match, look for create option
+                        self.logger.debug("No match found, looking for create option")
                         try:
                             create_option = self.page.locator(SELECTOR_CREATE).first
                             self.logger.info(f"Creating new category: {lcsc_category}")
@@ -343,6 +371,7 @@ class LCSCImporter:
                         except Exception as e:
                             self.logger.warning(f"Could not find create option: {e}")
                             # Press Enter as fallback
+                            self.logger.info("Pressing Enter as fallback")
                             ts_input.press("Enter")
 
                 except PlaywrightTimeout:
